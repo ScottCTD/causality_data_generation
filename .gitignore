@@ -1,0 +1,5 @@
+shot_out/
+__pycache__/
+*.json
+*.txt
+.DS_Store
