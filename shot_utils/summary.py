@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List
+from typing import Dict, Iterable, List
 
 import pooltool as pt
 from pooltool.events.datatypes import AgentType, EventType
@@ -30,6 +30,22 @@ def _build_pocket_index(table: pt.Table) -> Dict[str, int]:
     for idx, pocket_id in enumerate(ordered, start=1):
         mapping[pocket_id] = idx
     return mapping
+
+
+def _first_nonzero_velocity(ball: pt.Ball, eps: float = 1e-6) -> tuple[float, float, float]:
+    history = ball.history
+    states: Iterable = history if not history.empty else [ball.state]
+
+    first_state = None
+    for state in states:
+        if first_state is None:
+            first_state = state
+        vel = state.rvw[1]
+        if any(abs(comp) > eps for comp in vel):
+            return tuple(float(comp) for comp in vel)
+
+    assert first_state is not None
+    return tuple(float(comp) for comp in first_state.rvw[1])
 
 
 def summarize_system(system: pt.System) -> dict[str, dict[str, object]]:
@@ -85,7 +101,7 @@ def summarize_system(system: pt.System) -> dict[str, dict[str, object]]:
         history = ball.history
         state = history[0] if not history.empty else ball.state
         pos = tuple(float(coord) for coord in state.rvw[0])
-        vel = tuple(float(coord) for coord in state.rvw[1])
+        vel = _first_nonzero_velocity(ball)
         hits = wall_hits[ball_id]
         first_hit = hits[0] if hits else None
         pocket_idx = pocket_results[ball_id]
