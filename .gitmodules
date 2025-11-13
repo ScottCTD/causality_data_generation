@@ -1,0 +1,3 @@
+[submodule "pooltool"]
+	path = pooltool
+	url = git@github.com:Teinble/pooltool.git
