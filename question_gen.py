@@ -240,6 +240,12 @@ def find_position_cfs(pos: Tuple[float,float], vel: Tuple[float,float], vel_to_i
         return []
     return random.sample(candidates, min(n, len(candidates)))
 
+def coord_to_str(coord, prefix="") -> str:
+    # Round very small values to zero to avoid unnatural formats like "-0.00"
+    x = coord[0] if abs(coord[0]) >= 0.005 else 0.0
+    y = coord[1] if abs(coord[1]) >= 0.005 else 0.0
+    return f"({prefix}x={x:.2f}, {prefix}y={y:.2f})"
+
 def generate_sft_mcq_multilabel(sim_data: List[Dict]):
     """
     Generate dataset with the following schema for each example:
@@ -282,13 +288,16 @@ def generate_sft_mcq_multilabel(sim_data: List[Dict]):
         })
 
         # --- COUNTERFACTUALS: up to 3 velocity and 3 position neighbors ---
+        w, h = 0.9906, 1.9812
+        context_text = f"Pocket locations: red at (0, 0), green at ({w}, 0), white at (0, {h}), and purple at ({w}, {h})."
+        
         vel_cf_ids = find_velocity_cfs(pos, vel, pos_to_ids, id2entry, n=3)
         for vel_cf_id in vel_cf_ids:
             cf_entry = id2entry[vel_cf_id]
             cf_out = cf_entry["outcomes"]
             true_opts_cf = outcome_options_from_outcome(cf_out)
             options_list, ground_indices = sample_multilabel_options(true_opts_cf, OPTION_POOL, total=NUM_OPTIONS)
-            question_text = f"If the initial velocity were changed from {vel} to {tuple(cf_entry['initial_state']['velocity'])} (assume all other variables are unchanged), what would happen?"
+            question_text = f"{context_text} If the initial velocity were changed from {coord_to_str(vel, prefix="d")} to {coord_to_str(cf_entry['initial_state']['velocity'], prefix="d")} (assume all other variables are unchanged), what would happen?"
             out_dataset.append({
                 "video": video,
                 "question": question_text,
@@ -309,7 +318,7 @@ def generate_sft_mcq_multilabel(sim_data: List[Dict]):
             cf_out = cf_entry["outcomes"]
             true_opts_cf = outcome_options_from_outcome(cf_out)
             options_list, ground_indices = sample_multilabel_options(true_opts_cf, OPTION_POOL, total=NUM_OPTIONS)
-            question_text = f"If the ball had started at position {tuple(cf_entry['initial_state']['position'])} instead of {pos} (assume all other variables are unchanged), what would happen?"
+            question_text = f"{context_text} If the initial ball position were changed from {coord_to_str(pos)} to {coord_to_str(cf_entry['initial_state']['position'])} (assume all other variables are unchanged), what would happen?"
             out_dataset.append({
                 "video": video,
                 "question": question_text,
@@ -330,7 +339,7 @@ def generate_sft_mcq_multilabel(sim_data: List[Dict]):
 sim_data = []
 # i= 0
 # limit=100
-for fname in glob.glob(os.path.join("data", "output", "shot_*", "*.json")):
+for fname in glob.glob(os.path.join("output", "shot_*", "*.json")):
     # if i >= limit:
     #     break
     with open(fname, "r") as f:
