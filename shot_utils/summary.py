@@ -8,6 +8,25 @@ from pooltool.events.datatypes import AgentType, EventType
 
 from . import config
 
+BALL_COLOR_MAP = {
+    "cue": "white_cue",
+    "1": "yellow_solid",
+    "2": "blue_solid",
+    "3": "red_solid",
+    "4": "pink_solid",
+    "5": "orange_solid",
+    "6": "green_solid",
+    "7": "brown_solid",
+    "8": "black_solid",
+    "9": "yellow_stripe",
+    "10": "blue_stripe",
+    "11": "red_stripe",
+    "12": "pink_stripe",
+    "13": "orange_stripe",
+    "14": "green_stripe",
+    "15": "brown_stripe",
+}
+
 
 def _natural_key(value: str) -> List[int | str]:
     parts = re.split(r"(\d+)", value)
@@ -59,11 +78,14 @@ def summarize_system(
 
     wall_hits: dict[str, list[int]] = {ball_id: [] for ball_id in system.balls}
     ball_hits: dict[str, list[str]] = {ball_id: [] for ball_id in system.balls}
-    hit_sequence: dict[str, list[dict[str, str]]] = {ball_id: [] for ball_id in system.balls}
-    pocket_results: dict[str, int | None] = {ball_id: None for ball_id in system.balls}
+    hit_sequence: dict[str, list[dict[str, str]]] = {
+        ball_id: [] for ball_id in system.balls}
+    pocket_results: dict[str, int | None] = {
+        ball_id: None for ball_id in system.balls}
 
     for event in system.events:
-        ball_ids = [agent.id for agent in event.agents if agent.agent_type == AgentType.BALL]
+        ball_ids = [
+            agent.id for agent in event.agents if agent.agent_type == AgentType.BALL]
         if not ball_ids:
             continue
 
@@ -107,13 +129,15 @@ def summarize_system(
                     pocket_results[ball_id] = pocket_id
 
         elif event.event_type == EventType.BALL_BALL:
-            other_balls = [agent.id for agent in event.agents if agent.agent_type == AgentType.BALL]
+            other_balls = [
+                agent.id for agent in event.agents if agent.agent_type == AgentType.BALL]
             for hitter in other_balls:
                 for target in other_balls:
                     if target == hitter:
                         continue
                     ball_hits[hitter].append(target)
-                    hit_sequence[hitter].append({"type": "ball", "name": target})
+                    hit_sequence[hitter].append(
+                        {"type": "ball", "name": target})
 
     summary: dict[str, dict[str, object]] = {}
     for ball_id, ball in system.balls.items():
@@ -126,6 +150,7 @@ def summarize_system(
         summary[ball_id] = {
             "initial_position": pos,
             "initial_velocity": vel,
+            "color": BALL_COLOR_MAP.get(ball_id, "unknown"),
             "outcomes": {
                 "hits": hit_sequence[ball_id],
                 "pocket": pocket_color_lookup.get(pocket_idx) if pocket_idx else None,
