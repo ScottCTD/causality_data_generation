@@ -57,7 +57,7 @@ def main():
 
         # Simulate
         print("  Simulating...")
-        simulate_shot(system, config.DURATION, fps)
+        simulate_shot(system, fps)
 
         # Render frames
         print("  Rendering frames...")
@@ -82,4 +82,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

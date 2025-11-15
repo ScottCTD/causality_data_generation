@@ -1,7 +1,6 @@
 from pathlib import Path
 
 FPS = 15
-DURATION = 5.0
 BASE_OUTPUT = Path("outputs")
 GLOBAL_INDEX_PATH = BASE_OUTPUT / "global_index.json"
 FRAME_SIZE = (int(1.6 * 720), 720)

@@ -70,6 +70,19 @@ def _first_nonzero_velocity(ball: pt.Ball, eps: float = 1e-6) -> tuple[float, fl
 def summarize_system(
     system: pt.System, metadata: dict[str, object] | None = None
 ) -> dict[str, dict[str, object]]:
+    meta = metadata or {}
+    fps = float(meta.get("fps", config.FPS))
+    duration = float(system.t or 0.0)
+    total_frames_meta = meta.get("total_frames")
+    # For error tolerance, May not really be called anytime
+    if total_frames_meta is not None:
+        try:
+            total_frames = max(1, int(total_frames_meta))
+        except (TypeError, ValueError):
+            total_frames = int(max(1, round(fps * duration))) if fps > 0 else 1
+    else:
+        total_frames = int(max(1, round(fps * duration))) if fps > 0 else 1
+
     cushion_index = _build_cushion_index(system.table)
     pocket_index = _build_pocket_index(system.table)
     pocket_color_lookup = {
@@ -78,12 +91,19 @@ def summarize_system(
 
     wall_hits: dict[str, list[int]] = {ball_id: [] for ball_id in system.balls}
     ball_hits: dict[str, list[str]] = {ball_id: [] for ball_id in system.balls}
-    hit_sequence: dict[str, list[dict[str, str]]] = {
+    hit_sequence: dict[str, list[dict[str, object]]] = {
         ball_id: [] for ball_id in system.balls}
     pocket_results: dict[str, int | None] = {
         ball_id: None for ball_id in system.balls}
 
     for event in system.events:
+        event_time = getattr(event, "time", 0.0) or 0.0
+        if fps > 0:
+            clamped_time = max(0.0, min(duration, float(event_time)))
+            frame_idx = int(round(clamped_time * fps))
+            frame_idx = min(frame_idx, total_frames - 1)
+        else:
+            frame_idx = 0
         ball_ids = [
             agent.id for agent in event.agents if agent.agent_type == AgentType.BALL]
         if not ball_ids:
@@ -113,6 +133,7 @@ def summarize_system(
                     {
                         "type": "wall",
                         "name": config.CUSHION_COLOR_LOOKUP.get(cushion_id, "unknown"),
+                        "frame": frame_idx,
                     }
                 )
 
@@ -137,7 +158,7 @@ def summarize_system(
                         continue
                     ball_hits[hitter].append(target)
                     hit_sequence[hitter].append(
-                        {"type": "ball", "name": target})
+                        {"type": "ball", "name": target, "frame": frame_idx})
 
     summary: dict[str, dict[str, object]] = {}
     for ball_id, ball in system.balls.items():
@@ -159,6 +180,7 @@ def summarize_system(
             },
         }
     return {
-        "metadata": metadata or {},
+        "metadata": meta,
+        "total_frames": total_frames,
         "balls": summary,
     }

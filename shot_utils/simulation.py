@@ -17,7 +17,7 @@ def build_system_one_ball_hit_cushion(x: float, y: float, velocity: float, phi: 
     return system
 
 
-def simulate_shot(system: pt.System, duration: float, fps: int) -> None:
+def simulate_shot(system: pt.System, fps: int) -> None:
     pt.simulate(system, continuous=True, dt=1.0 / fps, inplace=True)
 
 

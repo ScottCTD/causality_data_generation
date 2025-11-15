@@ -31,10 +31,10 @@ def run_shot(
     shot_id = shot_id.split("/")[-1]
 
     system = build_system_one_ball_hit_cushion(x, y, velocity, phi)
-    simulate_shot(system, config.DURATION, config.FPS)
+    simulate_shot(system, config.FPS)
 
     # df = extract_trajectories(system)
-    # df = df[df["t"] <= config.DURATION].copy()
+    # df = df[df["t"] <= system.t].copy()
     #
     # trajectory_path = outdir / f"trajectory_{shot_id}.csv"
     # df.to_csv(trajectory_path, index=False)
@@ -48,15 +48,17 @@ def run_shot(
         "velocity": velocity,
         "phi": phi,
         "fps": config.FPS,
-        "duration": config.DURATION,
     }
+
+    frames_dir = render_frames(system, outdir, config.FPS)
+    frame_count = len(list(frames_dir.glob(f"{config.FRAME_PREFIX}_*.png")))
+    metadata["total_frames"] = frame_count
 
     summary = summarize_system(system, metadata=metadata)
     summary_path = outdir / f"summary_{shot_id}.json"
     with open(summary_path, "w", encoding="utf-8") as fp:
         json.dump(summary, fp, indent=2)
 
-    frames_dir = render_frames(system, outdir, config.FPS)
     video_path = outdir / f"video.mp4"
     encode_video(frames_dir, config.FPS, video_path)
     # Always delete frames directory after encoding video

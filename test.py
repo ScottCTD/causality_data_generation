@@ -51,7 +51,7 @@ def main() -> None:
     system, cue_start = _build_three_ball_collision_system(
         reference_table, cue_speed, cue_phi)
 
-    simulate_shot(system, config.DURATION, config.FPS)
+    simulate_shot(system, config.FPS)
 
     shot_dir = config.BASE_OUTPUT / "debug" / "multi_ball_collision"
     shot_dir.mkdir(parents=True, exist_ok=True)
@@ -62,15 +62,17 @@ def main() -> None:
         "velocity": cue_speed,
         "phi": cue_phi,
         "fps": config.FPS,
-        "duration": config.DURATION,
     }
+
+    frames_dir = render_frames(system, shot_dir, config.FPS)
+    frame_count = len(list(frames_dir.glob(f"{config.FRAME_PREFIX}_*.png")))
+    metadata["total_frames"] = frame_count
 
     summary = summarize_system(system, metadata=metadata)
     summary_path = shot_dir / "summary_multi_ball_collision.json"
     with open(summary_path, "w", encoding="utf-8") as fp:
         json.dump(summary, fp, indent=2)
 
-    frames_dir = render_frames(system, shot_dir, config.FPS)
     video_path = shot_dir / "video.mp4"
     encode_video(frames_dir, config.FPS, video_path)
     try:
