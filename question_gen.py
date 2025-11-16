@@ -27,12 +27,14 @@ OPTION_POOL = [
     "The ball was pocketed in the orange pocket",
     "The ball was pocketed in the green pocket",
     "The ball was pocketed in the red pocket",
-    "The ball hit 0 walls",
-    "The ball hit 1 wall",
-    "The ball hit 2 walls",
-    "The ball hit 3 different walls",
-    "The ball bounced off a wall",
-    "The ball stayed on the table",
+    "The ball hits 0 walls",
+    "The ball hits 1 wall",
+    "The ball hits 2 different walls",
+    "The ball hits 3 different walls",
+    "The ball hits the same wall 2 times",
+    "The ball hits the same wall 3 times",
+    # "The ball bounced off a wall",
+    # "The ball stayed on the table",
     "The ball was not pocketed",
     "The first wall hit was green-blue-wall",
     "The first wall hit was orange-red-wall",
@@ -65,9 +67,10 @@ OPTION_POOL = [
 NUM_OPTIONS = 6  # total options per question
 
 def convert_to_future_tense(option: str) -> str:
-    """Convert past tense option to future tense for predictive questions."""
-    # Replace common past tense patterns with future tense
+    """Convert past/present tense option to future tense for predictive questions."""
+    # Replace common past/present tense patterns with future tense
     option = option.replace("The ball was pocketed", "The ball will be pocketed")
+    option = option.replace("The ball hits", "The ball will hit")
     option = option.replace("The ball hit", "The ball will hit")
     option = option.replace("The ball bounced", "The ball will bounce")
     option = option.replace("The ball stayed", "The ball will stay")
@@ -262,17 +265,30 @@ def outcome_options_from_outcome(outcomes: Dict, future_tense: bool = False) -> 
         if pocket_color:
             opts.append(f"The ball was pocketed in the {pocket_color} pocket")
     else:
-        opts.append("The ball stayed on the table")
+        # opts.append("The ball stayed on the table")
         opts.append("The ball was not pocketed")
 
     # wall-hit statements
-    opts.append(f"The ball hit {hits} wall" + ("s" if hits != 1 else ""))
-    if hits >= 1:
-        opts.append("The ball bounced off a wall")
-    if hits >= 3:
-        opts.append("The ball hit 3 different walls")
     if hits == 0:
-        opts.append("The ball hit 0 walls")
+        opts.append("The ball hits 0 walls")
+    elif hits == 1:
+        opts.append("The ball hits 1 wall")
+    elif hits >= 2:
+        # Check if all walls are the same or different
+        # Only check for same wall if we have complete wall_hits data
+        if wall_hits and len(wall_hits) == hits:
+            unique_walls = len(set(wall_hits))
+            if unique_walls == 1:
+                # Same wall hit multiple times
+                opts.append(f"The ball hits the same wall {hits} times")
+            else:
+                # Different walls
+                opts.append(f"The ball hits {hits} different walls")
+        else:
+            # Default to "different walls" if wall_hits data is incomplete
+            opts.append(f"The ball hits {hits} different walls")
+    # if hits >= 1:
+    #     opts.append("The ball bounced off a wall")
 
     # Add wall hit sequence options
     if wall_hits:
@@ -303,7 +319,7 @@ def sample_multilabel_options(true_opts: List[str], pool: List[str], total=4, nu
         future_tense: If True, convert distractors to future tense
     """
     if not true_opts:
-        true_opts = ["The ball stayed on the table"] if not future_tense else ["The ball will stay on the table"]
+        true_opts = ["The ball was not pocketed"] if not future_tense else ["The ball will not be pocketed"]
 
     num_correct = min(num_correct, len(true_opts), total)
     chosen_correct = random.sample(true_opts, num_correct)
@@ -312,9 +328,10 @@ def sample_multilabel_options(true_opts: List[str], pool: List[str], total=4, nu
     def is_consistent(opt, correct_opts):
         # Normalize option for comparison (remove tense differences)
         def normalize_tense(s):
-            # Convert future tense to past tense for comparison
+            # Convert future/present tense to past tense for comparison
             s = s.replace("will be pocketed", "was pocketed")
             s = s.replace("will hit", "hit")
+            s = s.replace("hits", "hit")  # Normalize present tense "hits" to "hit"
             s = s.replace("will bounce", "bounced")
             s = s.replace("will stay", "stayed")
             s = s.replace("will not be pocketed", "was not pocketed")
@@ -400,10 +417,13 @@ def generate_sft_mcq_multilabel(sim_data: List[Dict], num_options: int, num_corr
         vel = tuple(entry["initial_state"]["velocity"])
         outcomes = entry["outcomes"]
 
+        w, h = 0.9906, 1.9812
+        context_text = f"Pocket locations: red at (0, 0), green at ({w}, 0), gray at (0, {h}), and purple at ({w}, {h}). Walls are named by the colors of the two pockets they connect (e.g., the 'red-green' wall is between the red and green pockets)."
+
         # --- DESCRIPTIVE question (full video) ---
         true_opts = outcome_options_from_outcome(outcomes)
         options_list, ground_indices = sample_multilabel_options(true_opts, OPTION_POOL, total=num_options, num_correct=num_correct)
-        question_text = "What happened in this video?"
+        question_text = f"Context: {context_text}\nQuestion: What happened in this video?"
         out_dataset.append({
             "video": video,
             "question": question_text,
@@ -458,7 +478,7 @@ def generate_sft_mcq_multilabel(sim_data: List[Dict], num_options: int, num_corr
         }
         true_opts_predictive = outcome_options_from_outcome(filtered_outcomes, future_tense=True)
         options_list, ground_indices = sample_multilabel_options(true_opts_predictive, OPTION_POOL, total=num_options, num_correct=num_correct, future_tense=True)
-        question_text = "Based on the first half of the video, what will happen in STRICTLY the second half of the video?"
+        question_text = f"Context: {context_text}\nQuestion: Based on the first half of the video, what will happen in STRICTLY the second half of the video?"
         out_dataset.append({
             "video": video.replace(".mp4","_firsthalf.mp4"),
             "question": question_text,
@@ -468,16 +488,13 @@ def generate_sft_mcq_multilabel(sim_data: List[Dict], num_options: int, num_corr
         })
 
         # --- COUNTERFACTUALS: up to 3 velocity and 3 position neighbors ---
-        w, h = 0.9906, 1.9812
-        context_text = f"Pocket locations: red at (0, 0), green at ({w}, 0), white at (0, {h}), and purple at ({w}, {h})."
-        
         vel_cf_ids = find_velocity_cfs(pos, vel, pos_to_ids, id2entry, n=3)
         for vel_cf_id in vel_cf_ids:
             cf_entry = id2entry[vel_cf_id]
             cf_out = cf_entry["outcomes"]
             true_opts_cf = outcome_options_from_outcome(cf_out)
             options_list, ground_indices = sample_multilabel_options(true_opts_cf, OPTION_POOL, total=num_options, num_correct=num_correct)
-            question_text = f"{context_text} If the initial velocity were changed from {coord_to_str(vel, prefix='d')} to {coord_to_str(cf_entry['initial_state']['velocity'], prefix='d')} (assume all other variables are unchanged), what would happen?"
+            question_text = f"Context: {context_text}\nQuestion: If the initial velocity were changed from {coord_to_str(vel, prefix='d')} to {coord_to_str(cf_entry['initial_state']['velocity'], prefix='d')} (assume all other variables are unchanged), what would happen?"
             out_dataset.append({
                 "video": video,
                 "question": question_text,
@@ -498,7 +515,7 @@ def generate_sft_mcq_multilabel(sim_data: List[Dict], num_options: int, num_corr
             cf_out = cf_entry["outcomes"]
             true_opts_cf = outcome_options_from_outcome(cf_out)
             options_list, ground_indices = sample_multilabel_options(true_opts_cf, OPTION_POOL, total=num_options, num_correct=num_correct)
-            question_text = f"{context_text} If the initial ball position were changed from {coord_to_str(pos)} to {coord_to_str(cf_entry['initial_state']['position'])} (assume all other variables are unchanged), what would happen?"
+            question_text = f"Context: {context_text}\nQuestion: If the initial ball position were changed from {coord_to_str(pos)} to {coord_to_str(cf_entry['initial_state']['position'])} (assume all other variables are unchanged), what would happen?"
             out_dataset.append({
                 "video": video,
                 "question": question_text,
