@@ -35,9 +35,10 @@ def run_shot(
     phi: float,
     camera_name: str,
 ) -> dict[str, object]:
-    outdir.mkdir(parents=True, exist_ok=True)
-    shot_id = shot_id.split("/")[-1]
+    # shot_id is now already just the shot number (e.g., "shot_01")
+    # Each camera+shot combo gets a unique shot number
     outdir = config.BASE_OUTPUT / "shots" / shot_id
+    outdir.mkdir(parents=True, exist_ok=True)
 
     system = build_system_one_ball_hit_cushion(x, y, velocity, phi)
     simulate_shot(system, config.FPS)
@@ -145,10 +146,13 @@ def main(processes: int | None = None, dataset_name: str = "default", num_shots:
 
     combos = list(itertools.product(positions, velocities, phis))
     tasks = []
-    for camera_name in CAMERA_STATES:
-        for idx, ((x, y), velocity, phi) in enumerate(combos, start=1):
-            shot_label = f"{camera_name}/shot_{idx:02d}"
+    shot_counter = 1
+    # Treat each camera * shot combo as a unique shot
+    for (x, y), velocity, phi in combos:
+        for camera_name in CAMERA_STATES:
+            shot_label = f"shot_{shot_counter:02d}"
             tasks.append((shot_label, x, y, velocity, phi, camera_name))
+            shot_counter += 1
 
     # Limit to num_shots if specified (for test runs)
     if num_shots is not None:
