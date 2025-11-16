@@ -17,6 +17,7 @@ from typing import List, Dict, Tuple
 import glob
 import os
 import argparse
+from tqdm import tqdm
 
 OPTION_POOL = [
     "The ball was pocketed",
@@ -75,6 +76,62 @@ def convert_to_future_tense(option: str) -> str:
     option = option.replace("The second wall hit was", "The second wall hit will be")
     option = option.replace("The third wall hit was", "The third wall hit will be")
     return option
+
+def has_hit_index_exceeding_threshold(sim_entry: Dict, max_hit_index: int) -> bool:
+    """
+    Check if any hit in the simulation entry has an index > max_hit_index.
+    
+    Args:
+        sim_entry: A simulation data dictionary (loaded from JSON)
+        max_hit_index: Maximum allowed hit index (exclusive)
+    
+    Returns:
+        True if any hit has index > max_hit_index, False otherwise
+    """
+    if max_hit_index is None:
+        return False
+    
+    # Check hits in all balls
+    balls = sim_entry.get('balls', {})
+    if not isinstance(balls, dict):
+        return False
+    
+    for ball_key, ball_data in balls.items():
+        if not isinstance(ball_data, dict):
+            continue
+        outcomes = ball_data.get('outcomes', {})
+        if not isinstance(outcomes, dict):
+            continue
+        hits_list = outcomes.get('hits', [])
+        if not isinstance(hits_list, list):
+            continue
+        
+        for hit in hits_list:
+            if isinstance(hit, dict):
+                hit_index = hit.get('index')
+                if hit_index is not None:
+                    try:
+                        if int(hit_index) > max_hit_index:
+                            return True
+                    except (ValueError, TypeError):
+                        continue
+    
+    # Also check top-level outcomes if present
+    outcomes_raw = sim_entry.get('outcomes', {})
+    if isinstance(outcomes_raw, dict):
+        hits_list = outcomes_raw.get('hits', [])
+        if isinstance(hits_list, list):
+            for hit in hits_list:
+                if isinstance(hit, dict):
+                    hit_index = hit.get('index')
+                    if hit_index is not None:
+                        try:
+                            if int(hit_index) > max_hit_index:
+                                return True
+                        except (ValueError, TypeError):
+                            continue
+    
+    return False
 
 def filter_outcomes_for_predictive(outcomes_raw, total_frames):
     """
@@ -337,7 +394,7 @@ def generate_sft_mcq_multilabel(sim_data: List[Dict], num_options: int, num_corr
     id2entry, idx_pos_vel, pos_to_ids, vel_to_ids = make_index(sim_data)
     out_dataset = []
 
-    for sim_id, entry in id2entry.items():
+    for sim_id, entry in tqdm(id2entry.items(), desc="Generating questions"):
         video = entry["video"]
         pos = tuple(entry["initial_state"]["position"])
         vel = tuple(entry["initial_state"]["velocity"])
@@ -464,20 +521,32 @@ if __name__ == "__main__":
     parser.add_argument("--num-options", type=int, default=4, help="Total number of options per question.")
     parser.add_argument("--num-correct", type=int, default=2, help="Number of correct options per question.")
     parser.add_argument("--output", "-o", type=str, default=None, help="Output file path (default: outputs/{dataset}/raw_qa.jsonl). Can be relative or absolute.")
+    parser.add_argument("--exclude-invalid-hits", action="store_true", help="Exclude videos with any hit index > 18.")
     args = parser.parse_args()
 
     dataset_dir = os.path.join("outputs", args.dataset)
     shots_pattern = os.path.join(dataset_dir, "shots", "shot_*", "*.json")
     
     sim_data = []
+    excluded_count = 0
     # i= 0
     # limit=100
-    for fname in glob.glob(shots_pattern):
+    all_files = glob.glob(shots_pattern)
+    for fname in tqdm(all_files, desc="Loading simulation data"):
         # if i >= limit:
         #     break
         with open(fname, "r") as f:
-            sim_data.append(json.load(f))
+            entry = json.load(f)
+            # Filter out entries with hit index > 18 if flag is set
+            if args.exclude_invalid_hits and has_hit_index_exceeding_threshold(entry, 18):
+                excluded_count += 1
+                continue
+            sim_data.append(entry)
         # i += 1
+
+    if args.exclude_invalid_hits:
+        print(f"Excluded {excluded_count} shots with hit index > 18")
+    print(f"Processing {len(sim_data)} shots")
 
     dataset = generate_sft_mcq_multilabel(sim_data, num_options=args.num_options, num_correct=args.num_correct)
     # Write to jsonl
