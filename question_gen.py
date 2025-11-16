@@ -1,5 +1,9 @@
 # The following script takes the shot metadata JSON files generated from the simulations
 # and produces a dataset of multiple-choice questions (MCQs) suitable for training/evaluating
+#
+# Usage example:
+#   python question_gen.py --num-options 6 --num-correct 2
+# This will generate MCQs with 6 options per question, 2 of which are correct.
 
 import json
 import random
@@ -7,7 +11,7 @@ from collections import defaultdict
 from typing import List, Dict, Tuple
 import glob
 import os
-
+import argparse
 
 OPTION_POOL = [
     "The ball was pocketed",
@@ -53,6 +57,25 @@ OPTION_POOL = [
 ]
 
 NUM_OPTIONS = 6  # total options per question
+
+def filter_outcomes_for_predictive(outcomes_raw, total_frames):
+    """
+    Return a filtered version of outcomes_raw where wall hits with frame < 0.5*total_frames are removed,
+    and wall_hits count is adjusted accordingly.
+    """
+    if not isinstance(outcomes_raw, dict):
+        return outcomes_raw
+    half_frames = 0.5 * total_frames if total_frames else 0
+    hits_list = outcomes_raw.get('hits', [])
+    filtered_hits = [
+        h for h in hits_list
+        if not (isinstance(h, dict) and h.get('type') == 'wall' and h.get('frame', 0) < half_frames)
+    ]
+    wall_hits = [h.get('name') for h in filtered_hits if isinstance(h, dict) and h.get('type') == 'wall']
+    filtered = dict(outcomes_raw)
+    filtered['hits'] = filtered_hits
+    filtered['wall_hits'] = len(wall_hits)
+    return filtered
 
 def make_index(sim_data: List[Dict]):
     """
@@ -156,8 +179,6 @@ def outcome_options_from_outcome(outcomes: Dict) -> List[str]:
 
     if pocketed:
         opts.append("The ball was pocketed")
-        if which in (1,2,3,4,5,6):
-            opts.append(f"The ball fell into pocket {which}")
         if pocket_color:
             opts.append(f"The ball was pocketed in the {pocket_color} pocket")
     else:
@@ -182,16 +203,16 @@ def outcome_options_from_outcome(outcomes: Dict) -> List[str]:
             opts.append(f"The third wall hit was {wall_hits[2]}")
     return list(dict.fromkeys(opts))  # dedupe, preserve order
 
-def sample_multilabel_options(true_opts: List[str], pool: List[str], total=6):
+def sample_multilabel_options(true_opts: List[str], pool: List[str], total=4, num_correct=2):
     """
-    Pick t = 1..min(3, len(true_opts)) correct options randomly from true_opts,
+    Pick num_correct correct options randomly from true_opts,
     then fill to `total` with distractors from pool not overlapping chosen corrects.
     Only sample distractors that are not logically inconsistent with the true options.
     """
     if not true_opts:
         true_opts = ["The ball stayed on the table"]
 
-    num_correct = random.randint(1, min(3, len(true_opts)))
+    num_correct = min(num_correct, len(true_opts), total)
     chosen_correct = random.sample(true_opts, num_correct)
 
     # Filter distractors to avoid logical inconsistency
@@ -246,12 +267,12 @@ def coord_to_str(coord, prefix="") -> str:
     y = coord[1] if abs(coord[1]) >= 0.005 else 0.0
     return f"({prefix}x={x:.2f}, {prefix}y={y:.2f})"
 
-def generate_sft_mcq_multilabel(sim_data: List[Dict]):
+def generate_sft_mcq_multilabel(sim_data: List[Dict], num_options: int, num_correct: int):
     """
     Generate dataset with the following schema for each example:
       - video: str
       - question: str
-      - options: List[str]  # length NUM_OPTIONS
+      - options: List[str]  # length num_options
       - ground_truth: List[int]  # list of 0-based indices into options
       - metadata: {...}
     """
@@ -266,7 +287,7 @@ def generate_sft_mcq_multilabel(sim_data: List[Dict]):
 
         # --- DESCRIPTIVE question (full video) ---
         true_opts = outcome_options_from_outcome(outcomes)
-        options_list, ground_indices = sample_multilabel_options(true_opts, OPTION_POOL, total=NUM_OPTIONS)
+        options_list, ground_indices = sample_multilabel_options(true_opts, OPTION_POOL, total=num_options, num_correct=num_correct)
         question_text = "What happened in this video?"
         out_dataset.append({
             "video": video,
@@ -277,8 +298,52 @@ def generate_sft_mcq_multilabel(sim_data: List[Dict]):
         })
 
         # --- PREDICTIVE question (first-half video) ---
-        options_list, ground_indices = sample_multilabel_options(true_opts, OPTION_POOL, total=NUM_OPTIONS)
-        question_text = "Based on the first half of the video, what will happen by the end?"
+        # Filter wall hits for predictive question only
+        # Get total_frames from root or metadata
+        raw = sim_data[sim_id]
+        total_frames = raw.get("total_frames")
+        if total_frames is None:
+            total_frames = (raw.get("metadata") or {}).get("total_frames")
+        if total_frames is None:
+            total_frames = 0
+        # Reparse outcomes_raw for predictive
+        balls = raw.get('balls', {})
+        cue = balls.get('cue')
+        if cue is None and isinstance(balls, dict) and balls:
+            first_key = next(iter(balls), None)
+            cue = balls.get(first_key) if first_key is not None else None
+        if cue is not None:
+            outcomes_raw = cue.get('outcomes', {})
+        else:
+            outcomes_raw = raw.get('outcomes', {})
+        filtered_outcomes_raw = filter_outcomes_for_predictive(outcomes_raw, total_frames)
+        # Build filtered outcomes dict for options
+        hits_list = filtered_outcomes_raw.get('hits', [])
+        wall_hits = [h.get('name') for h in hits_list if isinstance(h, dict) and h.get('type') == 'wall']
+        pocket_val = filtered_outcomes_raw.get('pocket', filtered_outcomes_raw.get('pocketed', None))
+        if isinstance(pocket_val, dict):
+            pocket_color = pocket_val.get('color')
+        elif isinstance(pocket_val, str):
+            pocket_color = pocket_val
+        elif pocket_val is not None:
+            pocket_color = str(pocket_val)
+        else: 
+            pocket_color = None
+        num_wall_hits = filtered_outcomes_raw.get('wall_hits', filtered_outcomes_raw.get('num_wall_hits', None))
+        if num_wall_hits is None and hits_list:
+            num_wall_hits = sum(1 for h in hits_list if isinstance(h, dict) and h.get('type') == 'wall')
+        pocketed = pocket_val is not None
+        which_pocket = pocket_val if pocketed else None
+        filtered_outcomes = {
+            'num_wall_hits': int(num_wall_hits) if num_wall_hits is not None else 0,
+            'wall_hits': wall_hits,
+            'pocketed': bool(pocketed),
+            'which_pocket': which_pocket,
+            'pocket_color': pocket_color
+        }
+        true_opts_predictive = outcome_options_from_outcome(filtered_outcomes)
+        options_list, ground_indices = sample_multilabel_options(true_opts_predictive, OPTION_POOL, total=num_options, num_correct=num_correct)
+        question_text = "Based on the first half of the video, what will happened in STRICTLY the second half of the video?"
         out_dataset.append({
             "video": video.replace(".mp4","_firsthalf.mp4"),
             "question": question_text,
@@ -296,8 +361,8 @@ def generate_sft_mcq_multilabel(sim_data: List[Dict]):
             cf_entry = id2entry[vel_cf_id]
             cf_out = cf_entry["outcomes"]
             true_opts_cf = outcome_options_from_outcome(cf_out)
-            options_list, ground_indices = sample_multilabel_options(true_opts_cf, OPTION_POOL, total=NUM_OPTIONS)
-            question_text = f"{context_text} If the initial velocity were changed from {coord_to_str(vel, prefix="d")} to {coord_to_str(cf_entry['initial_state']['velocity'], prefix="d")} (assume all other variables are unchanged), what would happen?"
+            options_list, ground_indices = sample_multilabel_options(true_opts_cf, OPTION_POOL, total=num_options, num_correct=num_correct)
+            question_text = f"{context_text} If the initial velocity were changed from {coord_to_str(vel, prefix='d')} to {coord_to_str(cf_entry['initial_state']['velocity'], prefix='d')} (assume all other variables are unchanged), what would happen?"
             out_dataset.append({
                 "video": video,
                 "question": question_text,
@@ -317,7 +382,7 @@ def generate_sft_mcq_multilabel(sim_data: List[Dict]):
             cf_entry = id2entry[pos_cf_id]
             cf_out = cf_entry["outcomes"]
             true_opts_cf = outcome_options_from_outcome(cf_out)
-            options_list, ground_indices = sample_multilabel_options(true_opts_cf, OPTION_POOL, total=NUM_OPTIONS)
+            options_list, ground_indices = sample_multilabel_options(true_opts_cf, OPTION_POOL, total=num_options, num_correct=num_correct)
             question_text = f"{context_text} If the initial ball position were changed from {coord_to_str(pos)} to {coord_to_str(cf_entry['initial_state']['position'])} (assume all other variables are unchanged), what would happen?"
             out_dataset.append({
                 "video": video,
@@ -335,20 +400,25 @@ def generate_sft_mcq_multilabel(sim_data: List[Dict]):
 
     return out_dataset
 
-# Read all JSON files from ./data/output/
-sim_data = []
-# i= 0
-# limit=100
-for fname in glob.glob(os.path.join("output", "shot_*", "*.json")):
-    # if i >= limit:
-    #     break
-    with open(fname, "r") as f:
-        sim_data.append(json.load(f))
-    # i += 1
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate MCQ dataset from simulation metadata.")
+    parser.add_argument("--num-options", type=int, default=4, help="Total number of options per question.")
+    parser.add_argument("--num-correct", type=int, default=2, help="Number of correct options per question.")
+    args = parser.parse_args()
 
-dataset = generate_sft_mcq_multilabel(sim_data)
-# Write to jsonl
-with open("mcq_multilabel.jsonl", "w") as f:
-    for ex in dataset:
-        f.write(json.dumps(ex) + "\n")
-print("Wrote", len(dataset), "examples")
+    sim_data = []
+    # i= 0
+    # limit=100
+    for fname in glob.glob(os.path.join("output", "shot_*", "*.json")):
+        # if i >= limit:
+        #     break
+        with open(fname, "r") as f:
+            sim_data.append(json.load(f))
+        # i += 1
+
+    dataset = generate_sft_mcq_multilabel(sim_data, num_options=args.num_options, num_correct=args.num_correct)
+    # Write to jsonl
+    with open("mcq_multilabel.jsonl", "w") as f:
+        for ex in dataset:
+            f.write(json.dumps(ex) + "\n")
+    print("Wrote", len(dataset), "examples")
