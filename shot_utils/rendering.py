@@ -7,12 +7,37 @@ from subprocess import DEVNULL
 
 from pooltool.ani.animate import FrameStepper
 from pooltool.ani.camera import CameraState, camera_states
+import pooltool.ani.camera.states as camera_states_module
 from pooltool.ani.image import ImageExt, ImageZip, save_images
 
 from . import config
 
 
-def render_frames(system, outdir: Path, fps: int) -> Path:
+_PACKAGE_STATE_DIR = Path(camera_states_module.__file__).parent
+_REPO_STATE_DIR = (
+    Path(__file__).resolve().parent.parent / "pooltool" / "pooltool" / "ani" / "camera" / "states"
+)
+_STATE_DIRS = []
+if _REPO_STATE_DIR.exists():
+    _STATE_DIRS.append(_REPO_STATE_DIR)
+_STATE_DIRS.append(_PACKAGE_STATE_DIR)
+
+
+def _get_camera_state(name: str) -> CameraState:
+    if name in camera_states:
+        return camera_states[name]
+    for state_dir in _STATE_DIRS:
+        state_path = state_dir / f"{name}.json"
+        if state_path.exists():
+            state = CameraState.from_json(state_path)
+            camera_states[name] = state
+            return state
+    raise KeyError(
+        f"Camera state '{name}' not found. Checked: {[str(d / f'{name}.json') for d in _STATE_DIRS]}"
+    )
+
+
+def render_frames(system, outdir: Path, fps: int, camera_name: str | None = None) -> Path:
     frames_dir = outdir / "frames"
     if frames_dir.exists():
         shutil.rmtree(frames_dir)
@@ -22,7 +47,8 @@ def render_frames(system, outdir: Path, fps: int) -> Path:
                         prefix=config.FRAME_PREFIX, compress=False)
 
     try:
-        camera_state = camera_states[config.CAMERA_NAME]
+        state_name = camera_name or config.CAMERA_NAME
+        camera_state = _get_camera_state(state_name)
         offset = getattr(config, "CAMERA_DISTANCE_OFFSET", 0.0)
         if offset:
             cam_pos = (

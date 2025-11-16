@@ -10,13 +10,21 @@ from functools import partial
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
-import pooltool as pt
 from tqdm import tqdm
+
+import pooltool as pt
 from shot_utils import config
 from shot_utils.rendering import encode_video, render_frames
 from shot_utils.simulation import (build_system_one_ball_hit_cushion,
                                    extract_trajectories, simulate_shot)
 from shot_utils.summary import summarize_system
+
+CAMERA_STATES = [
+    "7_foot_offcenter",
+    "LongSideView",
+    "WidthSideView",
+    "7_foot_overhead",
+]
 
 
 def run_shot(
@@ -25,8 +33,9 @@ def run_shot(
     y: float,
     velocity: float,
     phi: float,
+    camera_name: str,
 ) -> dict[str, object]:
-    outdir = config.BASE_OUTPUT / shot_id
+    outdir = config.BASE_OUTPUT / camera_name / shot_id
     outdir.mkdir(parents=True, exist_ok=True)
     shot_id = shot_id.split("/")[-1]
 
@@ -50,9 +59,11 @@ def run_shot(
         "fps": config.FPS,
     }
 
-    frames_dir = render_frames(system, outdir, config.FPS)
+    frames_dir = render_frames(
+        system, outdir, config.FPS, camera_name=camera_name)
     frame_count = len(list(frames_dir.glob(f"{config.FRAME_PREFIX}_*.png")))
     metadata["total_frames"] = frame_count
+    metadata["camera_name"] = camera_name
 
     summary = summarize_system(system, metadata=metadata)
     summary_path = outdir / f"summary_{shot_id}.json"
@@ -73,6 +84,7 @@ def run_shot(
         "cue_start": metadata["cue_start"],
         "velocity": velocity,
         "phi": phi,
+        "camera": camera_name,
         "paths": {
             "directory": str(outdir),
             # "trajectory": str(trajectory_path),
@@ -123,20 +135,21 @@ def main(processes: int | None = None, dataset_name: str = "default", num_shots:
     # Set up dataset-specific output directory
     config.BASE_OUTPUT = Path("outputs") / dataset_name
     config.GLOBAL_INDEX_PATH = config.BASE_OUTPUT / "global_index.json"
-    
+
     config.BASE_OUTPUT.mkdir(parents=True, exist_ok=True)
 
     reference_table = pt.Table.default()
-    positions = _scaled_positions(reference_table, num=10)
-    velocities = _segment_values(0.3, 1.8, num=10)
-    phis = _segment_angles(num=10)
+    positions = _scaled_positions(reference_table, num=1)
+    velocities = _segment_values(0.3, 1.8, num=1)
+    phis = _segment_angles(num=1)
 
     combos = list(itertools.product(positions, velocities, phis))
-    tasks = [
-        (f"shot_{idx:02d}", x, y, velocity, phi)
-        for idx, ((x, y), velocity, phi) in enumerate(combos, start=1)
-    ]
-    
+    tasks = []
+    for camera_name in CAMERA_STATES:
+        for idx, ((x, y), velocity, phi) in enumerate(combos, start=1):
+            shot_label = f"{camera_name}/shot_{idx:02d}"
+            tasks.append((shot_label, x, y, velocity, phi, camera_name))
+
     # Limit to num_shots if specified (for test runs)
     if num_shots is not None:
         tasks = tasks[:num_shots]
@@ -159,9 +172,9 @@ def main(processes: int | None = None, dataset_name: str = "default", num_shots:
     print(f"Generated {len(results)} shots using {proc_count} processes")
 
 
-def _run_shot_from_tuple(args: tuple[str, float, float, float, float]):
-    shot_id, x, y, velocity, phi = args
-    result = run_shot(shot_id, x, y, velocity, phi)
+def _run_shot_from_tuple(args: tuple[str, float, float, float, float, str]):
+    shot_id, x, y, velocity, phi, camera_name = args
+    result = run_shot(shot_id, x, y, velocity, phi, camera_name)
     return result
 
 
@@ -189,4 +202,5 @@ if __name__ == "__main__":
         help="Number of shots to generate for test run (defaults to all shots)",
     )
     args = parser.parse_args()
-    main(processes=args.processes, dataset_name=args.dataset_name, num_shots=args.test_shots)
+    main(processes=args.processes, dataset_name=args.dataset_name,
+         num_shots=args.test_shots)
