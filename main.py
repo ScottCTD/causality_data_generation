@@ -9,12 +9,25 @@ import shutil
 from functools import partial
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
+import sys
 
 from tqdm import tqdm
 
+from panda3d.core import loadPrcFileData
+
+# Disable audio completely (no more ALSA/OpenAL spam)
+loadPrcFileData("", "audio-library-name null\n")
+
+# Force offscreen / headless rendering (no window, avoids :0.0 errors if supported)
+loadPrcFileData("", "window-type offscreen\n")
+
+# Reduce log verbosity for these subsystems
+loadPrcFileData("", "notify-level audio error\n")
+loadPrcFileData("", "notify-level-display error\n")
+
 import pooltool as pt
 from shot_utils import config
-from shot_utils.rendering import encode_video, render_frames
+from shot_utils.rendering import render_and_encode_video
 from shot_utils.simulation import (build_system_one_ball_hit_cushion,
                                    extract_trajectories, simulate_shot)
 from shot_utils.summary import summarize_system
@@ -40,6 +53,29 @@ def run_shot(
     outdir = config.BASE_OUTPUT / "shots" / shot_id
     outdir.mkdir(parents=True, exist_ok=True)
 
+    video_path = outdir / f"video.mp4"
+    summary_path = outdir / f"summary_{shot_id}.json"
+
+    # Skip if both video and summary already exist
+    if video_path.exists() and summary_path.exists():
+        # Load existing summary to get metadata
+        with open(summary_path, "r", encoding="utf-8") as fp:
+            summary = json.load(fp)
+        metadata = summary.get("metadata", {})
+        
+        return { 
+            "shot_id": shot_id,
+            "cue_start": metadata.get("cue_start", {"x": x, "y": y}),
+            "velocity": metadata.get("velocity", velocity),
+            "phi": metadata.get("phi", phi),
+            "camera": metadata.get("camera_name", camera_name),
+            "paths": {
+                "directory": str(outdir),
+                "summary": str(summary_path),
+                "video": str(video_path),
+            },
+        }
+
     system = build_system_one_ball_hit_cushion(x, y, velocity, phi)
     simulate_shot(system, config.FPS)
 
@@ -60,25 +96,19 @@ def run_shot(
         "fps": config.FPS,
     }
 
-    frames_dir = render_frames(
-        system, outdir, config.FPS, camera_name=camera_name)
-    frame_count = len(list(frames_dir.glob(f"{config.FRAME_PREFIX}_*.png")))
+    frame_count = render_and_encode_video(
+        system=system,
+        outdir=outdir,
+        fps=config.FPS,
+        video_path=video_path,
+        camera_name=camera_name,
+    )
     metadata["total_frames"] = frame_count
     metadata["camera_name"] = camera_name
 
     summary = summarize_system(system, metadata=metadata)
-    summary_path = outdir / f"summary_{shot_id}.json"
     with open(summary_path, "w", encoding="utf-8") as fp:
         json.dump(summary, fp, indent=2)
-
-    video_path = outdir / f"video.mp4"
-    encode_video(frames_dir, config.FPS, video_path)
-    # Always delete frames directory after encoding video
-    try:
-        if frames_dir.exists():
-            shutil.rmtree(frames_dir)
-    except Exception:
-        pass  # Best effort cleanup
 
     return {
         "shot_id": shot_id,
@@ -140,9 +170,9 @@ def main(processes: int | None = None, dataset_name: str = "default", num_shots:
     config.BASE_OUTPUT.mkdir(parents=True, exist_ok=True)
 
     reference_table = pt.Table.default()
-    positions = _scaled_positions(reference_table, num=1)
-    velocities = _segment_values(0.3, 1.8, num=1)
-    phis = _segment_angles(num=1)
+    positions = _scaled_positions(reference_table, num=16)
+    velocities = _segment_values(0.3, 1.8, num=16)
+    phis = _segment_angles(num=16)
 
     combos = list(itertools.product(positions, velocities, phis))
     tasks = []
@@ -161,12 +191,15 @@ def main(processes: int | None = None, dataset_name: str = "default", num_shots:
     worker = partial(_run_shot_from_tuple)
     proc_count = processes or cpu_count()
     with Pool(processes=proc_count) as pool:
-        results = list(tqdm(
-            pool.imap(worker, tasks),
-            total=len(tasks),
-            desc="Generating shots",
-            unit="shot",
-        ))
+        results = list(
+            tqdm(
+                pool.imap(worker, tasks),
+                total=len(tasks),
+                desc="Generating shots",
+                unit="shot",
+                file=sys.stdout,
+            )
+        )
 
     index_path = config.GLOBAL_INDEX_PATH
     with open(index_path, "w", encoding="utf-8") as fp:
