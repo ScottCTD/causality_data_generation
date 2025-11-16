@@ -132,6 +132,7 @@ def summarize_system(
                 hit_sequence[ball_id].append(
                     {
                         "type": "wall",
+                        "index": cushion_id,
                         "name": config.CUSHION_COLOR_LOOKUP.get(cushion_id, "unknown"),
                         "frame": frame_idx,
                     }
