@@ -2,6 +2,12 @@
 
 ## Env Setup
 
+New:
+```sh
+uv sync
+```
+
+Legacy:
 On Linux:
 ```sh
 # install poetry
@@ -23,6 +29,15 @@ pip install -e .
 
 uv pip install pandas tqdm
 ```
+
+## Generate Video Shots
+
+Testing:
+```sh
+uv run python tests/test.py
+```
+
+## Generate Questions
 
 
 ```sh
