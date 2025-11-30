@@ -1,3 +1,4 @@
 [submodule "pooltool"]
 	path = pooltool
-	url = git@github.com:Teinble/pooltool.git
+	url = git@github.com:ScottCTD/pooltool.git
+	branch = causal_pool
