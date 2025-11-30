@@ -7,6 +7,7 @@ import json
 import math
 import shutil
 import sys
+import time
 from functools import partial
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
@@ -27,9 +28,19 @@ loadPrcFileData("", "notify-level-display error\n")
 import pooltool as pt
 from pooltool.objects.ball.sets import BallSet
 from shot_utils import config
-from shot_utils.rendering import encode_video, render_frames
+from shot_utils.rendering import encode_video_stream, _render_frame_stack
 from shot_utils.simulation import BallState, build_system, simulate_shot
 from shot_utils.summary import summarize_system
+
+CAMERA_STATES = [
+    "7_foot_offcenter",
+    "LongSideView",
+    "WidthSideView",
+    "7_foot_overhead",
+]
+
+# Map camera names to IDs
+CAMERA_ID_MAP = {name: f"cam{i}" for i, name in enumerate(CAMERA_STATES)}
 
 SHOT_PRESETS: tuple[tuple[str, float, float], ...] = (
     ("soft_cut", 1.6, 60.0),
@@ -119,19 +130,61 @@ def _render_shot(
     ball1_phi: float = 0.0,
     ball2_speed: float = 0.0,
     ball2_phi: float = 0.0,
-) -> None:
-    """Simulate, render, and encode a single shot."""
+) -> dict:
+    """Simulate, render, and encode a single shot with multiple camera views."""
+    # Build system
     table = pt.Table.default()
     system, ball_states, cue_start = _build_three_ball_collision_system(
         table, cue_speed, cue_phi, ball1_speed, ball1_phi, ball2_speed, ball2_phi
     )
+    
+    # Time simulation
+    sim_start = time.time()
     simulate_shot(system, fps)
+    sim_time = time.time() - sim_start
 
     shot_dir = output_dir / shot_id
     shot_dir.mkdir(parents=True, exist_ok=True)
 
-    frames_dir = render_frames(system, shot_dir, fps)
-    frame_count = len(list(frames_dir.glob(f"{config.FRAME_PREFIX}_*.png")))
+    # Render videos for each camera view
+    video_paths = {
+        camera_name: shot_dir / f"video_{CAMERA_ID_MAP[camera_name]}.mp4"
+        for camera_name in CAMERA_STATES
+    }
+    
+    render_times = {}
+    encode_times = {}
+    frame_count: int | None = None
+    
+    for camera_name, video_path in video_paths.items():
+        # Time rendering separately
+        render_start = time.time()
+        frames = _render_frame_stack(system, fps=fps, camera_name=camera_name)
+        render_time = time.time() - render_start
+        
+        # Time encoding separately
+        encode_start = time.time()
+        encode_video_stream(frames, fps=fps, video_path=video_path)
+        encode_time = time.time() - encode_start
+        
+        render_times[camera_name] = render_time
+        encode_times[camera_name] = encode_time
+        
+        if frame_count is None:
+            frame_count = frames.shape[0]
+    
+    # Fallback frame count
+    if frame_count is None:
+        for ball in system.balls.values():
+            history = getattr(ball, "history_cts", None) or getattr(ball, "history", None)
+            if history is not None:
+                try:
+                    frame_count = len(history)
+                    break
+                except Exception:
+                    continue
+        if frame_count is None:
+            frame_count = 0
     
     # Serialize ball_states to dict format for JSON (matching main.py format)
     initial_ball_states = {
@@ -155,14 +208,13 @@ def _render_shot(
     with open(summary_path, "w", encoding="utf-8") as fp:
         json.dump(summary, fp, indent=2)
 
-    video_path = shot_dir / f"{shot_id}.mp4"
-    encode_video(frames_dir, fps, video_path)
-    if not keep_frames:
-        try:
-            if frames_dir.exists():
-                shutil.rmtree(frames_dir)
-        except Exception:
-            pass
+    # Return timing information for aggregation
+    return {
+        "shot_id": shot_id,
+        "sim_time": sim_time,
+        "render_times": render_times,
+        "encode_times": encode_times,
+    }
 
 
 def _parse_args() -> argparse.Namespace:
@@ -188,7 +240,7 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _run_shot_from_tuple(args: tuple[Path, str, float, float, int, bool, float, float, float, float]) -> None:
+def _run_shot_from_tuple(args: tuple[Path, str, float, float, int, bool, float, float, float, float]) -> dict:
     """Worker function that unpacks tuple arguments for multiprocessing."""
     (
         output_dir,
@@ -202,7 +254,7 @@ def _run_shot_from_tuple(args: tuple[Path, str, float, float, int, bool, float, 
         ball2_speed,
         ball2_phi,
     ) = args
-    _render_shot(
+    return _render_shot(
         output_dir=output_dir,
         shot_id=shot_id,
         cue_speed=cue_speed,
@@ -256,19 +308,49 @@ def main() -> None:
     # Process tasks in parallel
     proc_count = args.processes or cpu_count()
     worker = partial(_run_shot_from_tuple)
+    timing_results = []
     with Pool(processes=proc_count) as pool:
-        list(
-            tqdm(
-                pool.imap(worker, tasks),
-                total=len(tasks),
-                desc="Generating shots",
-                unit="shot",
-                file=sys.stdout,
-            )
-        )
+        for result in tqdm(
+            pool.imap(worker, tasks),
+            total=len(tasks),
+            desc="Generating shots",
+            unit="shot",
+            file=sys.stdout,
+        ):
+            timing_results.append(result)
 
     total_shots = len(SHOT_PRESETS) + len(SHOT_PRESETS_WITH_VELOCITIES)
-    print(f"Generated {total_shots} videos in {args.output_dir} using {proc_count} processes")
+    print(f"\nGenerated {total_shots} videos in {args.output_dir} using {proc_count} processes")
+    
+    # Compute and print averaged timing statistics
+    if timing_results:
+        num_shots = len(timing_results)
+        avg_sim_time = sum(r["sim_time"] for r in timing_results) / num_shots
+        
+        # Aggregate render and encode times per camera
+        avg_render_times = {camera: 0.0 for camera in CAMERA_STATES}
+        avg_encode_times = {camera: 0.0 for camera in CAMERA_STATES}
+        
+        for result in timing_results:
+            for camera in CAMERA_STATES:
+                avg_render_times[camera] += result["render_times"][camera]
+                avg_encode_times[camera] += result["encode_times"][camera]
+        
+        for camera in CAMERA_STATES:
+            avg_render_times[camera] /= num_shots
+            avg_encode_times[camera] /= num_shots
+        
+        total_avg_render_time = sum(avg_render_times.values())
+        total_avg_encode_time = sum(avg_encode_times.values())
+        
+        print(f"\nAverage timing breakdown (over {num_shots} shots):")
+        print(f"  Simulation: {avg_sim_time:.3f}s")
+        print(f"  Rendering (total): {total_avg_render_time:.3f}s")
+        print(f"  Encoding (total): {total_avg_encode_time:.3f}s")
+        print(f"  Per camera:")
+        for camera_name in CAMERA_STATES:
+            print(f"    {camera_name}: render={avg_render_times[camera_name]:.3f}s, encode={avg_encode_times[camera_name]:.3f}s")
+        print(f"  Total: {avg_sim_time + total_avg_render_time + total_avg_encode_time:.3f}s")
 
 
 if __name__ == "__main__":
