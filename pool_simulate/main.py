@@ -31,6 +31,7 @@ from shot_utils.simulation import (
     build_system,
     simulate_shot,
 )
+from shot_utils.stats import compute_dataset_stats
 from shot_utils.summary import summarize_system
 
 CAMERA_STATES = [
@@ -50,6 +51,7 @@ def run_shot(
     shot_id: str,
     ball_states: dict[str, BallState],
     camera_names: tuple[str, ...] = tuple(CAMERA_STATES),
+    max_duration: float | None = None,
 ) -> None:
     # shot_id is per unique shot (ball_states configuration)
     # Each shot directory contains multiple video files, one per camera
@@ -67,7 +69,7 @@ def run_shot(
 
     # Build and simulate system once per shot (reuse for all cameras)
     system = build_system(ball_states)
-    simulate_shot(system, config.FPS)
+    simulate_shot(system, config.FPS, max_second=max_duration)
 
     # Render videos only for missing cameras
     frame_count: int | None = None
@@ -164,6 +166,7 @@ def main(
     processes: int | None = None,
     dataset_name: str = "default",
     num_shots: int | None = None,
+    max_duration: float | None = None,
 ) -> None:
     # Set up dataset-specific output directory
     base_output = Path("outputs") / dataset_name
@@ -185,7 +188,7 @@ def main(
         ball_states = {
             "cue": BallState(x=x, y=y, speed=speed, phi=phi),
         }
-        tasks.append((base_output, shot_label, ball_states, tuple(CAMERA_STATES)))
+        tasks.append((base_output, shot_label, ball_states, tuple(CAMERA_STATES), max_duration))
         shot_counter += 1
 
     # Limit to num_shots if specified (for test runs)
@@ -207,11 +210,19 @@ def main(
             pass
 
     print(f"Generated {len(tasks)} shots using {proc_count} processes")
+    
+    # Compute and save dataset statistics
+    print("Computing dataset statistics...")
+    stats = compute_dataset_stats(base_output)
+    stats_path = base_output / "stats.json"
+    with open(stats_path, "w", encoding="utf-8") as fp:
+        json.dump(stats, fp, indent=2)
+    print(f"Statistics saved to {stats_path}")
 
 
-def _run_shot_from_tuple(args: tuple[Path, str, dict[str, BallState], tuple[str, ...]]) -> None:
-    base_output, shot_id, ball_states, camera_names = args
-    run_shot(base_output, shot_id, ball_states, camera_names)
+def _run_shot_from_tuple(args: tuple[Path, str, dict[str, BallState], tuple[str, ...], float | None]) -> None:
+    base_output, shot_id, ball_states, camera_names, max_duration = args
+    run_shot(base_output, shot_id, ball_states, camera_names, max_duration)
 
 
 if __name__ == "__main__":
@@ -237,9 +248,17 @@ if __name__ == "__main__":
         default=None,
         help="Number of shots to generate for test run (defaults to all shots)",
     )
+    parser.add_argument(
+        "-m",
+        "--max-duration",
+        type=float,
+        default=8,
+        help="Maximum video duration in seconds (defaults to 8 seconds)",
+    )
     args = parser.parse_args()
     main(
         processes=args.processes,
         dataset_name=args.dataset_name,
         num_shots=args.test_shots,
+        max_duration=args.max_duration,
     )
