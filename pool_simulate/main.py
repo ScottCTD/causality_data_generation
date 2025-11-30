@@ -6,14 +6,13 @@ import argparse
 import itertools
 import json
 import shutil
+import sys
 from functools import partial
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
-import sys
-
-from tqdm import tqdm
 
 from panda3d.core import loadPrcFileData
+from tqdm import tqdm
 
 # Disable audio completely (no more ALSA/OpenAL spam)
 loadPrcFileData("", "audio-library-name null\n")
@@ -28,8 +27,12 @@ loadPrcFileData("", "notify-level-display error\n")
 import pooltool as pt
 from shot_utils import config
 from shot_utils.rendering import render_and_encode_video
-from shot_utils.simulation import (build_system_one_ball_hit_cushion,
-                                   extract_trajectories, simulate_shot)
+from shot_utils.simulation import (
+    BallState,
+    build_system,
+    extract_trajectories,
+    simulate_shot,
+)
 from shot_utils.summary import summarize_system
 
 CAMERA_STATES = [
@@ -39,63 +42,35 @@ CAMERA_STATES = [
     "7_foot_overhead",
 ]
 
+# Map camera names to IDs
+CAMERA_ID_MAP = {name: f"cam{i:02d}" for i, name in enumerate(CAMERA_STATES)}
+CAMERA_NAME_MAP = {cam_id: name for name, cam_id in CAMERA_ID_MAP.items()}
+
 
 def run_shot(
+    base_output: Path,
     shot_id: str,
-    x: float,
-    y: float,
-    velocity: float,
-    phi: float,
+    ball_states: dict[str, BallState],
     camera_name: str,
-) -> dict[str, object]:
-    # shot_id is now already just the shot number (e.g., "shot_01")
-    # Each camera+shot combo gets a unique shot number
-    outdir = config.BASE_OUTPUT / "shots" / shot_id
+) -> None:
+    # shot_id is per unique shot (ball_states configuration)
+    # Each shot directory contains multiple video files, one per camera
+    outdir = base_output / "shots" / shot_id
     outdir.mkdir(parents=True, exist_ok=True)
 
-    video_path = outdir / f"video.mp4"
-    summary_path = outdir / f"summary_{shot_id}.json"
+    camera_id = CAMERA_ID_MAP[camera_name]
+    video_path = outdir / f"video_{camera_id}.mp4"
+    summary_path = outdir / f"summary.json"
 
-    # Skip if both video and summary already exist
+    # Skip if already exists
     if video_path.exists() and summary_path.exists():
-        # Load existing summary to get metadata
-        with open(summary_path, "r", encoding="utf-8") as fp:
-            summary = json.load(fp)
-        metadata = summary.get("metadata", {})
-        
-        return { 
-            "shot_id": shot_id,
-            "cue_start": metadata.get("cue_start", {"x": x, "y": y}),
-            "velocity": metadata.get("velocity", velocity),
-            "phi": metadata.get("phi", phi),
-            "camera": metadata.get("camera_name", camera_name),
-            "paths": {
-                "directory": str(outdir),
-                "summary": str(summary_path),
-                "video": str(video_path),
-            },
-        }
+        return
 
-    system = build_system_one_ball_hit_cushion(x, y, velocity, phi)
+    # Build and simulate system (needed for rendering)
+    system = build_system(ball_states)
     simulate_shot(system, config.FPS)
 
-    # df = extract_trajectories(system)
-    # df = df[df["t"] <= system.t].copy()
-    #
-    # trajectory_path = outdir / f"trajectory_{shot_id}.csv"
-    # df.to_csv(trajectory_path, index=False)
-    #
-    # system_path = outdir / f"system_{shot_id}.json"
-    # system.save(system_path)
-
-    metadata = {
-        "shot_id": shot_id,
-        "cue_start": {"x": x, "y": y},
-        "velocity": velocity,
-        "phi": phi,
-        "fps": config.FPS,
-    }
-
+    # Render video for this camera
     frame_count = render_and_encode_video(
         system=system,
         outdir=outdir,
@@ -103,27 +78,28 @@ def run_shot(
         video_path=video_path,
         camera_name=camera_name,
     )
-    metadata["total_frames"] = frame_count
-    metadata["camera_name"] = camera_name
 
-    summary = summarize_system(system, metadata=metadata)
-    with open(summary_path, "w", encoding="utf-8") as fp:
-        json.dump(summary, fp, indent=2)
-
-    return {
-        "shot_id": shot_id,
-        "cue_start": metadata["cue_start"],
-        "velocity": velocity,
-        "phi": phi,
-        "camera": camera_name,
-        "paths": {
-            "directory": str(outdir),
-            # "trajectory": str(trajectory_path),
-            # "system": str(system_path),
-            "summary": str(summary_path),
-            "video": str(video_path),
-        },
-    }
+    # Create summary if it doesn't exist (first camera for this shot)
+    if not summary_path.exists():
+        # Serialize ball_states to dict format for JSON
+        initial_ball_states = {
+            ball_id: {
+                "x": state.x,
+                "y": state.y,
+                "speed": state.speed,
+                "phi": state.phi,
+            }
+            for ball_id, state in ball_states.items()
+        }
+        metadata = {
+            "shot_id": shot_id,
+            "fps": config.FPS,
+            "total_frames": frame_count,
+            "initial_ball_states": initial_ball_states,
+        }
+        summary = summarize_system(system, metadata=metadata)
+        with open(summary_path, "w", encoding="utf-8") as fp:
+            json.dump(summary, fp, indent=2)
 
 
 def _scaled_positions(table: pt.Table, num: int) -> list[tuple[float, float]]:
@@ -162,27 +138,34 @@ def _segment_angles(num: int) -> list[float]:
     return [(i * step) % 360.0 for i in range(num)]
 
 
-def main(processes: int | None = None, dataset_name: str = "default", num_shots: int | None = None) -> None:
+def main(
+    processes: int | None = None,
+    dataset_name: str = "default",
+    num_shots: int | None = None,
+) -> None:
     # Set up dataset-specific output directory
-    config.BASE_OUTPUT = Path("outputs") / dataset_name
-    config.GLOBAL_INDEX_PATH = config.BASE_OUTPUT / "global_index.json"
-
-    config.BASE_OUTPUT.mkdir(parents=True, exist_ok=True)
+    base_output = Path("outputs") / dataset_name
+    base_output.mkdir(parents=True, exist_ok=True)
 
     reference_table = pt.Table.default()
     positions = _scaled_positions(reference_table, num=16)
-    velocities = _segment_values(0.3, 1.8, num=16)
+    speeds = _segment_values(0.3, 1.8, num=16)
     phis = _segment_angles(num=16)
 
-    combos = list(itertools.product(positions, velocities, phis))
+    combos = list(itertools.product(positions, speeds, phis))
     tasks = []
     shot_counter = 1
-    # Treat each camera * shot combo as a unique shot
-    for (x, y), velocity, phi in combos:
+    # Each unique shot (ball_states configuration) gets one shot_id
+    # Each shot will have multiple videos (one per camera) in the same directory
+    for (x, y), speed, phi in combos:
+        shot_label = f"shot_{shot_counter:02d}"
+        # Create ball_states dict with cue ball
+        ball_states = {
+            "cue": BallState(x=x, y=y, speed=speed, phi=phi),
+        }
         for camera_name in CAMERA_STATES:
-            shot_label = f"shot_{shot_counter:02d}"
-            tasks.append((shot_label, x, y, velocity, phi, camera_name))
-            shot_counter += 1
+            tasks.append((base_output, shot_label, ball_states, camera_name))
+        shot_counter += 1
 
     # Limit to num_shots if specified (for test runs)
     if num_shots is not None:
@@ -191,7 +174,7 @@ def main(processes: int | None = None, dataset_name: str = "default", num_shots:
     worker = partial(_run_shot_from_tuple)
     proc_count = processes or cpu_count()
     with Pool(processes=proc_count) as pool:
-        results = list(
+        list(
             tqdm(
                 pool.imap(worker, tasks),
                 total=len(tasks),
@@ -201,18 +184,12 @@ def main(processes: int | None = None, dataset_name: str = "default", num_shots:
             )
         )
 
-    index_path = config.GLOBAL_INDEX_PATH
-    with open(index_path, "w", encoding="utf-8") as fp:
-        json.dump({"shots": results}, fp, indent=2)
-
-    print(f"Global index written to {index_path}")
-    print(f"Generated {len(results)} shots using {proc_count} processes")
+    print(f"Generated {len(tasks)} shots using {proc_count} processes")
 
 
-def _run_shot_from_tuple(args: tuple[str, float, float, float, float, str]):
-    shot_id, x, y, velocity, phi, camera_name = args
-    result = run_shot(shot_id, x, y, velocity, phi, camera_name)
-    return result
+def _run_shot_from_tuple(args: tuple[Path, str, dict[str, BallState], str]) -> None:
+    base_output, shot_id, ball_states, camera_name = args
+    run_shot(base_output, shot_id, ball_states, camera_name)
 
 
 if __name__ == "__main__":
@@ -239,5 +216,8 @@ if __name__ == "__main__":
         help="Number of shots to generate for test run (defaults to all shots)",
     )
     args = parser.parse_args()
-    main(processes=args.processes, dataset_name=args.dataset_name,
-         num_shots=args.test_shots)
+    main(
+        processes=args.processes,
+        dataset_name=args.dataset_name,
+        num_shots=args.test_shots,
+    )

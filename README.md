@@ -37,8 +37,9 @@ Testing:
 uv run python tests/test.py
 ```
 
-## Generate Questions
+Shots are stored in `./outputs/dataset_name/shots/shot_id/`. Each `shot_id` has multiple video files, one for each camera setting.
 
+## Generate Questions
 
 ```sh
 python question_gen.py \

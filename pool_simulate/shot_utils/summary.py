@@ -95,6 +95,9 @@ def summarize_system(
         ball_id: [] for ball_id in system.balls}
     pocket_results: dict[str, int | None] = {
         ball_id: None for ball_id in system.balls}
+    
+    # Collect all events for the events array
+    events_list: list[dict[str, object]] = []
 
     for event in system.events:
         event_time = getattr(event, "time", 0.0) or 0.0
@@ -127,6 +130,9 @@ def summarize_system(
             cushion_id = cushion_index.get(cushion_agent.id)
             if cushion_id is None:
                 continue
+            
+            event_type_str = "linear_cushion" if event.event_type == EventType.BALL_LINEAR_CUSHION else "circular_cushion"
+            
             for ball_id in ball_ids:
                 wall_hits[ball_id].append(cushion_id)
                 hit_sequence[ball_id].append(
@@ -137,6 +143,13 @@ def summarize_system(
                         "frame": frame_idx,
                     }
                 )
+                # Add to events list
+                events_list.append({
+                    "type": event_type_str,
+                    "ball_id": ball_id,
+                    "cushion_id": str(cushion_id),
+                    "frame": frame_idx,
+                })
 
         elif event.event_type == EventType.BALL_POCKET:
             pocket_agent = next(
@@ -149,6 +162,13 @@ def summarize_system(
             for ball_id in ball_ids:
                 if pocket_results[ball_id] is None:
                     pocket_results[ball_id] = pocket_id
+                # Add to events list
+                events_list.append({
+                    "type": "pocket",
+                    "pocket_id": pocket_id,
+                    "ball_id": ball_id,
+                    "frame": frame_idx,
+                })
 
         elif event.event_type == EventType.BALL_BALL:
             other_balls = [
@@ -160,6 +180,14 @@ def summarize_system(
                     ball_hits[hitter].append(target)
                     hit_sequence[hitter].append(
                         {"type": "ball", "name": target, "frame": frame_idx})
+                    # Add to events list (only once per pair)
+                    if hitter < target:  # Avoid duplicates by ordering
+                        events_list.append({
+                            "type": "ball",
+                            "hitter_id": hitter,
+                            "target_id": target,
+                            "frame": frame_idx,
+                        })
 
     summary: dict[str, dict[str, object]] = {}
     for ball_id, ball in system.balls.items():
@@ -174,14 +202,20 @@ def summarize_system(
             "initial_velocity": vel,
             "color": BALL_COLOR_MAP.get(ball_id, "unknown"),
             "outcomes": {
-                "hits": hit_sequence[ball_id],
                 "pocket": pocket_color_lookup.get(pocket_idx) if pocket_idx else None,
                 "wall_hits": len(hits),
                 "ball_hits": len(ball_hits[ball_id]),
             },
         }
+    # Ensure total_frames is in metadata
+    meta["total_frames"] = total_frames
+    
+    # Build cushion mapping from CUSHION_COLOR_LOOKUP (convert keys to strings)
+    cushion_mapping = {str(k): v for k, v in config.CUSHION_COLOR_LOOKUP.items()}
+    
     return {
         "metadata": meta,
-        "total_frames": total_frames,
         "balls": summary,
+        "events": events_list,
+        "cushion": cushion_mapping,
     }
