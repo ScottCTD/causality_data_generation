@@ -6,6 +6,9 @@ import argparse
 import itertools
 import json
 import sys
+import multiprocessing
+
+multiprocessing.set_start_method('spawn', force=True)
 from functools import partial
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
@@ -197,17 +200,22 @@ def main(
 
     worker = partial(_run_shot_from_tuple)
     proc_count = processes or cpu_count()
-    chunksize = max(1, len(tasks) // (proc_count * 4)) if tasks else 1
+    # Use chunksize=1 for more frequent progress updates
+    chunksize = 1
 
-    with Pool(processes=proc_count) as pool:
-        for _ in tqdm(
-            pool.imap(worker, tasks, chunksize=chunksize),
+    with Pool(processes=proc_count, maxtasksperchild=10) as pool:
+        with tqdm(
             total=len(tasks),
             desc="Generating shots",
             unit="shot",
             file=sys.stdout,
-        ):
-            pass
+            miniters=1,
+            mininterval=0.1,
+            dynamic_ncols=True,
+        ) as pbar:
+            for _ in pool.imap_unordered(worker, tasks, chunksize=chunksize):
+                pbar.update(1)
+                sys.stdout.flush()
 
     print(f"Generated {len(tasks)} shots using {proc_count} processes")
     

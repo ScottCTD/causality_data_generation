@@ -105,10 +105,10 @@ def main() -> None:
         "--predictive-filter-fraction",
         "-f",
         type=float,
-        default=0.5,
+        default=0.1,
         help=(
             "Fraction of video to filter out for predictive questions "
-            "(e.g., 0.5 means filter out wall hits from the first half)."
+            "(e.g., 0.1 means filter out wall hits from the first 10% of the video)."
         ),
     )
     parser.add_argument(

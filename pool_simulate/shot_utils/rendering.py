@@ -26,6 +26,22 @@ if _REPO_STATE_DIR.exists():
 _STATE_DIRS.append(_PACKAGE_STATE_DIR)
 
 
+_FRAME_STEPPER: FrameStepper | None = None
+
+
+def _get_frame_stepper() -> FrameStepper:
+    """Return a process-local FrameStepper, creating it on first use.
+
+    Reusing a single FrameStepper per process avoids repeatedly creating and
+    destroying Panda3D ShowBase instances, which is expensive and can cause
+    GPU memory usage to grow over time.
+    """
+    global _FRAME_STEPPER
+    if _FRAME_STEPPER is None:
+        _FRAME_STEPPER = FrameStepper()
+    return _FRAME_STEPPER
+
+
 def _get_camera_state(name: str) -> CameraState:
     if name in camera_states:
         return camera_states[name]
@@ -45,39 +61,36 @@ def render_frames(system, outdir: Path, fps: int, camera_name: str | None = None
     if frames_dir.exists():
         shutil.rmtree(frames_dir)
 
-    interface = FrameStepper()
+    interface = _get_frame_stepper()
     exporter = ImageZip(path=frames_dir, ext=ImageExt.PNG,
                         prefix=config.FRAME_PREFIX, compress=False)
 
-    try:
-        state_name = camera_name or config.CAMERA_NAME
-        camera_state = _get_camera_state(state_name)
-        offset = getattr(config, "CAMERA_DISTANCE_OFFSET", 0.0)
-        if offset:
-            cam_pos = (
-                camera_state.cam_pos[0] + offset,
-                camera_state.cam_pos[1],
-                camera_state.cam_pos[2],
-            )
-            camera_state = CameraState(
-                cam_hpr=camera_state.cam_hpr,
-                cam_pos=cam_pos,
-                fixation_hpr=camera_state.fixation_hpr,
-                fixation_pos=camera_state.fixation_pos,
-            )
-
-        save_images(
-            exporter=exporter,
-            system=system,
-            interface=interface,
-            size=config.FRAME_SIZE,
-            fps=fps,
-            camera_state=camera_state,
-            gray=False,
-            show_hud=False,
+    state_name = camera_name or config.CAMERA_NAME
+    camera_state = _get_camera_state(state_name)
+    offset = getattr(config, "CAMERA_DISTANCE_OFFSET", 0.0)
+    if offset:
+        cam_pos = (
+            camera_state.cam_pos[0] + offset,
+            camera_state.cam_pos[1],
+            camera_state.cam_pos[2],
         )
-    finally:
-        interface.destroy()
+        camera_state = CameraState(
+            cam_hpr=camera_state.cam_hpr,
+            cam_pos=cam_pos,
+            fixation_hpr=camera_state.fixation_hpr,
+            fixation_pos=camera_state.fixation_pos,
+        )
+
+    save_images(
+        exporter=exporter,
+        system=system,
+        interface=interface,
+        size=config.FRAME_SIZE,
+        fps=fps,
+        camera_state=camera_state,
+        gray=False,
+        show_hud=False,
+    )
 
     return frames_dir
 
@@ -92,35 +105,32 @@ def _render_frame_stack(
     This mirrors the logic in `render_frames` but keeps everything in memory so it
     can be streamed directly to ffmpeg instead of writing PNGs to disk.
     """
-    interface = FrameStepper()
-    try:
-        state_name = camera_name or config.CAMERA_NAME
-        camera_state = _get_camera_state(state_name)
-        offset = getattr(config, "CAMERA_DISTANCE_OFFSET", 0.0)
-        if offset:
-            cam_pos = (
-                camera_state.cam_pos[0] + offset,
-                camera_state.cam_pos[1],
-                camera_state.cam_pos[2],
-            )
-            camera_state = CameraState(
-                cam_hpr=camera_state.cam_hpr,
-                cam_pos=cam_pos,
-                fixation_hpr=camera_state.fixation_hpr,
-                fixation_pos=camera_state.fixation_pos,
-            )
-
-        frames = image_stack(
-            system=system,
-            interface=interface,
-            size=config.FRAME_SIZE,
-            fps=fps,
-            camera_state=camera_state,
-            gray=False,
-            show_hud=False,
+    interface = _get_frame_stepper()
+    state_name = camera_name or config.CAMERA_NAME
+    camera_state = _get_camera_state(state_name)
+    offset = getattr(config, "CAMERA_DISTANCE_OFFSET", 0.0)
+    if offset:
+        cam_pos = (
+            camera_state.cam_pos[0] + offset,
+            camera_state.cam_pos[1],
+            camera_state.cam_pos[2],
         )
-    finally:
-        interface.destroy()
+        camera_state = CameraState(
+            cam_hpr=camera_state.cam_hpr,
+            cam_pos=cam_pos,
+            fixation_hpr=camera_state.fixation_hpr,
+            fixation_pos=camera_state.fixation_pos,
+        )
+
+    frames = image_stack(
+        system=system,
+        interface=interface,
+        size=config.FRAME_SIZE,
+        fps=fps,
+        camera_state=camera_state,
+        gray=False,
+        show_hud=False,
+    )
 
     # Ensure frames are uint8 and RGB (drop alpha if present)
     frames = np.asarray(frames, dtype=np.uint8)

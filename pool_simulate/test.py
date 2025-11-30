@@ -22,7 +22,8 @@ loadPrcFileData("", "audio-library-name null\n")
 loadPrcFileData("", "window-type offscreen\n")
 
 # Reduce log verbosity for these subsystems
-loadPrcFileData("", "notify-level audio error\n")
+# Use category-specific notify-level variables to avoid config warnings.
+loadPrcFileData("", "notify-level-audio error\n")
 loadPrcFileData("", "notify-level-display error\n")
 
 import pooltool as pt
