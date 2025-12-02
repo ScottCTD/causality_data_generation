@@ -42,28 +42,6 @@ Shots are stored in `./outputs/dataset_name/shots/shot_id/`. Each `shot_id` has 
 ## Generate Questions
 
 ```sh
-python question_gen.py \
-  --seed 42 \
-  --dataset 1k_simple \
-  --output outputs/ds1/raw_qa.jsonl \
-  --num-options 4 \
-  --num-correct 2 \
-  --num-descriptive-per-shot 1 \
-  --num-predictive-per-shot 1 \
-  --max-velocity-cfs-per-shot 1 \
-  --max-position-cfs-per-shot 1 \
-  --exclude-invalid-hits \
-  --predictive-filter-fraction 0.2
-
-
-# only predictive
-python question_gen.py \
-  --dataset ds1 \
-  --output outputs/ds1/all_predictive.jsonl \
-  --num-descriptive-per-shot 0 \
-  --num-predictive-per-shot 3 \
-  --max-velocity-cfs-per-shot 0 \
-  --max-position-cfs-per-shot 0 \
-  --exclude-invalid-hits \
-  --predictive-filter-fraction 0.05
+python question_gen/question_gen.py -d ds2 -D 5 -p 5 -v 5 -P 5 -e
+python question_gen/generate_stats.py outputs/ds2/raw_qa.jsonl
 ```

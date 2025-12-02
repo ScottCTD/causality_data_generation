@@ -65,11 +65,14 @@ def generate_sft_mcq_multilabel(
         outcomes = entry["outcomes"]
 
         w, h = 0.9906, 1.9812
+        m = round(h / 2, 4)
         context_text = (
-            "Pocket locations: red at (0, 0), green at "
-            f"({w}, 0), gray at (0, {h}), and purple at ({w}, {h}). "
+            f"The pool table has a width of {w} and a height of {h}. "
+            "Pockets are marked by colored squares near them. Pocket locations: red at (0, 0), green at "
+            f"({w}, 0), orange at (0, {m}), blue at ({w}, {m}), gray at (0, {h}), and purple at ({w}, {h}). "
             "Walls are named by the colors of the two pockets they connect "
-            "(e.g., the 'red-green' wall is between the red and green pockets)."
+            "(e.g., the 'red-green' wall is between the red and green pockets). "
+            "Answer the following question by considering the cue ball (white) movements on the pool table."
         )
 
         # --- DESCRIPTIVE question(s) (full video) ---
@@ -86,6 +89,10 @@ def generate_sft_mcq_multilabel(
                     tense=Tense.BASE,
                     renderer=renderer,
                 )
+                # If sampling produced no valid correct options (e.g., all
+                # candidate facts were filtered out), skip this question.
+                if not options_list or not ground_indices:
+                    continue
                 question_text = (
                     "Context: "
                     + context_text
@@ -144,6 +151,8 @@ def generate_sft_mcq_multilabel(
                     tense=Tense.FUTURE,
                     renderer=renderer,
                 )
+                if not options_list or not ground_indices:
+                    continue
                 question_text = (
                     "Context: "
                     + context_text
@@ -181,6 +190,8 @@ def generate_sft_mcq_multilabel(
                     tense=Tense.CONDITIONAL,
                     renderer=renderer,
                 )
+                if not options_list or not ground_indices:
+                    continue
                 question_text = (
                     f"Context: {context_text}\n"
                     f"Question: If the initial velocity were changed from {coord_to_str(vel, prefix='d')} "
@@ -221,6 +232,8 @@ def generate_sft_mcq_multilabel(
                     tense=Tense.CONDITIONAL,
                     renderer=renderer,
                 )
+                if not options_list or not ground_indices:
+                    continue
                 question_text = (
                     f"Context: {context_text}\n"
                     f"Question: If the initial ball position were changed from {coord_to_str(pos)} "
@@ -246,4 +259,3 @@ def generate_sft_mcq_multilabel(
                 )
 
     return out_dataset
-
